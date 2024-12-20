@@ -15,3 +15,6 @@ about some "queries" and the communicators should communicate with the scraper (
 Essentially the communicator is a pass through so that the Web app 
 doesn't need to do any socket programming. Instead, the scraper and the
 communicator are solely responsible for connections.
+
+# CHECKOUT
+![IMAGE MISSING](FIFO_logic.jpg)

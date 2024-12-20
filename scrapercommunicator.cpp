@@ -1,5 +1,4 @@
 #include <cstdlib>
-
 #include <iostream>
 using std::cout;
 using std::cin;
@@ -26,6 +25,8 @@ using std::thread;
 using namespace std::literals::chrono_literals;
 using std::atomic;
 
+#include <ncurses.h>
+
 //DIRECTIVE: HELPERS
 //Some helper functions
 bool startsWith(const std::string& s1, const std::string& s2, int size) {
@@ -35,17 +36,20 @@ bool startsWith(const std::string& s1, const std::string& s2, int size) {
 //DIRECTIVE: SOCKET
 //Our connection to the 24 hour socketman
 const int PORT = 9000;
-void create_socket(int& sockfd){
+int create_socket(WINDOW* window, int& prow, int& sockfd){
     signal(SIGPIPE, SIG_IGN);
-    cout << "Creating socket" << endl;
+    mvwprintw(window, prow++, 1, "\tCreating socket");
+    //wrefresh(window);
     sockaddr_in server_addr;
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd == -1) {
-        cerr << "Socket creation failed" << endl;
-        exit(1);
+        mvwprintw(window, prow++, 1, "Socket creation failed");
+        //wrefresh(window);
+        return -1;
     }
-    cout << "socket val: " << sockfd << endl;
+    mvwprintw(window, prow++, 1, "socket val: %d", sockfd);
+    //wrefresh(window);
 
     server_addr.sin_family = AF_INET; // specifies IPv4
     server_addr.sin_port = htons(PORT); //specifies which port
@@ -63,9 +67,11 @@ void create_socket(int& sockfd){
     // Use setsockopt to allow address/port reuse
     int opt = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        cerr << "setsockopt(SO_REUSEADDR) failed: " << strerror(errno) << endl;
+        mvwprintw(window, prow++, 1, "\tsetsockopt(SO_REUSEADDR) failed: ");
+        mvwprintw(window, prow++, 1, "\t %s", strerror(errno));
+        //wrefresh(window);
         close(sockfd);
-        return;
+        return -1;
     }
 
     int finalPort = PORT;
@@ -73,7 +79,7 @@ void create_socket(int& sockfd){
     if (bindVal < 0) {
         int tries = 1;
         while((errno == EADDRINUSE || errno == EINVAL) && tries < 100){
-            cout << "Bind failed at port " << finalPort << ":" << strerror(errno) << endl;
+            //cout << "Bind failed at port " << finalPort << ":" << strerror(errno) << endl;
             tries++;
             finalPort++;
             memset(&server_addr, 0, sizeof(server_addr));
@@ -82,42 +88,54 @@ void create_socket(int& sockfd){
             server_addr.sin_addr.s_addr = INADDR_ANY; // means "listen at any interface" ?
             bindVal = bind(sockfd, (struct sockaddr*)& server_addr, sizeof(server_addr));
         }
-        cerr << "Bind failed" << endl;
-        cout << strerror(errno) << endl;
-        close(sockfd);
-        exit(1);
+        mvwprintw(window, prow++, 1, "\tBind failed");
+        mvwprintw(window, prow++, 1, "\t %s", strerror(errno));
+        //wrefresh(window);
+        return -1;
     }
 
-    cout << "Socket bind successful. Now listening..." << endl;
+    mvwprintw(window, prow++, 1, "Socket bind successful. Now listening...");
+    //wrefresh(window);
     if (listen(sockfd, 5) < 0) {
-        cerr << "Listen failed" << endl;
-        close(sockfd);
-        exit(1);
+        mvwprintw(window, prow++, 1, "Listen failed");
+        //wrefresh(window);
+        return -1;
     }
 
-    cout << "Socket created and listening on port " << finalPort << "..." << endl;
+    mvwprintw(window, prow++, 1, "Socket created and listening on port %d...", finalPort);
+    //wrefresh(window);
+    return 1;
 }
 
-int wait_for_socket(int& socket_fd){
-    cout << "Awaiting connection to socket " << endl;
+int wait_for_socket(WINDOW* window, int& socket_fd){
+    wclear(window);
+    //box(window, '|', '-');
+    mvwprintw(window, 1, 1, "Awaiting connection to socket");
+    wrefresh(window);
     sockaddr_in client{};
     socklen_t addr_len = sizeof(client);  
     int client_sock = accept(socket_fd, (struct sockaddr*)& client, &addr_len);
-    cout << "Accept val " << client_sock << endl;
+    //cout << "Accept val " << client_sock << endl;
     if(client_sock == -1) {
-        cout << "Error accepting client connection" << endl;
+        mvwprintw(window, 2, 1, "Error accepting client connection");
+        //wrefresh(window);
         return -1;
     }
     
-    cout << "Connected to a client" << endl;
+    mvwprintw(window, 3, 1, "Connected to a client");
+    //wrefresh(window);
     
     //TODO
     //determine a password authentication before allowing queries
+
+    //wrefresh(window);
     return client_sock;
 }
 
 //const int MSG_SIZE = 4000;
-int write_to_socket(int& socket_fd, const char* msg, size_t len){
+int write_to_socket(WINDOW* window, int& currRowForP, int& socket_fd, const char* msg, size_t len){
+    mvwprintw(window, currRowForP++, 1,"\tWriting...");
+    //wrefresh(window);
     send(socket_fd, &len, sizeof(len), 0);
     //char tosend[len+1];
     //memset(tosend, ' );
@@ -140,14 +158,18 @@ int write_to_socket(int& socket_fd, const char* msg, size_t len){
     //tosend[MSG_SIZE] = '\0';
     size_t totalSent = 0;
     while (totalSent < len+1) {
-        cout << "Sending>>>\"" << msg << "\""<< endl;
+        string trunc = msg;
+        trunc.resize(10);
+        mvwprintw(window, currRowForP++, 1, "\tSending>>>\"%s\" (%d chars)", trunc.c_str(), strlen(msg)); 
+        //wrefresh(window);
         
         struct pollfd pfd;
         pfd.fd = socket_fd;
         pfd.events = POLLOUT;
         int pollresults = poll(&pfd, 1, 5000);
         if(pollresults == 0){
-            cout << "Poll got empty signal, client is not responding" << endl;
+            mvwprintw(window, currRowForP++, 1, "\tPoll got empty (client not responding)");
+            //wrefresh(window);
             return 0;
         }
         else if(pollresults < 0){
@@ -159,21 +181,28 @@ int write_to_socket(int& socket_fd, const char* msg, size_t len){
             cout << "Could not send msg to socket: " << strerror(errno) << endl;
             return -1; // Error occurred
         }
-        cout << "sent " << bytesSent << " byte(s)" << endl;
+        mvwprintw(window, currRowForP++, 1, "\tsent %d byte(s)", bytesSent);
+        //wrefresh(window);
         totalSent += bytesSent;
     }
+    //wrefresh(window);
     return totalSent;
 }
 
-int ping_socket(int& socket_fd){
-    cout << "Pinging socket connection..." << endl;
+int ping_socket(WINDOW* window, int& socket_fd){
+    //wclear(window);
+    mvwprintw(window, 1, 1, "Pinging socket connection...");
+    //wrefresh(window);
     struct pollfd fds[1];
     fds[0].fd = socket_fd;
     fds[0].events = POLLIN;
 
-    int res = write_to_socket(socket_fd, "ping", 4);
+    int prow = 2;
+    int res = write_to_socket(window, prow, socket_fd, "ping", 4);
     if(res <= 0){
-        cout << "Error connecting to socket" << endl;
+        mvwprintw(window, prow++, 1, "\tError printing to socket");
+        //wrefresh(window);
+        return -1;
     }
 
     char buffer[10];
@@ -185,7 +214,8 @@ int ping_socket(int& socket_fd){
         return -1;
     }
     else if(ret == 0){
-        cout << "Timeout, no data to poll" << endl;
+        mvwprintw(window, prow++, 1, "Timeout, no data to poll");
+        //wrefresh(window);
         return 0;
     }
     ssize_t bytesReceived = recv(socket_fd, buffer, sizeof(buffer)-1, 0);
@@ -196,15 +226,16 @@ int ping_socket(int& socket_fd){
         return -1;
     }
     else if(bytesReceived == 0){
-        cout << "It seems the connection is closed" << endl;
+        mvwprintw(window, prow++, 1, "It seems the connection is closed");
+        //wrefresh(window);
         return 0;
     }
 
+    //wrefresh(window);
     return bytesReceived;
 }
 
 void close_socket(int& socketfd){
-    cout << "Closing the connection" << endl;
     shutdown(socketfd, SHUT_RDWR);
     close(socketfd);
 }
@@ -217,68 +248,138 @@ const int BUFFER_SIZE = 4096;
 string IFIFOPATH_STR = string(getenv("HOME")) + "/scrapecom/query";
 string OFIFOPATH_STR = string(getenv("HOME")) + "/scrapecom/response";
 
-void closeFIFO(const string& fifoPath){
+void removeFIFO(const string& fifoPath){
     unlink(fifoPath.c_str());
 }
 
-void closeAll(){
-    closeFIFO(OFIFOPATH_STR);
-    closeFIFO(IFIFOPATH_STR);
+//is useless
+void closeFIFO(const int& fd){
+    close(fd);
 }
 
-void createFIFO(const string& fifoPath) {
+//this should be called before everything stops
+//This function is meant to be a process kill
+// and release of resources
+void closeAll(int& socketfd){
+    removeFIFO(OFIFOPATH_STR);
+    removeFIFO(IFIFOPATH_STR);
+
+    close_socket(socketfd);
+}
+
+int createFIFO(const string& fifoPath) {
     if (mkfifo(fifoPath.c_str(), 0666) == -1) {
-        if (errno != EEXIST) {
-            cerr << "Error creating FIFO: " << strerror(errno) << endl;
-            closeAll();
-            exit(1);
-        }
+        return -1;
     }
+    return 1;
 }
 
+//TODO
+//Looks like the FIFO errors are improving (getting more independent)
+//But when we test it with our testing service app
+//  - it's hard to debug because none of the interactions are being 
+//      displayed
+//  - our testing service app isn't robust enough to make testing 
+//      more thorough/safe
+int connectToFIFO(WINDOW* window, int& IFIFO_opened, int& OFIFO_opened, struct pollfd* fds){
+    //wclear(window);
+    //box(window, '|', '-');
+    mvwprintw(window, 1, 1, "Connect To FIFO: ");
+    //wrefresh(window);
+    int row = 2;
+    if(!IFIFO_opened){
+        int read_fd = open(IFIFOPATH_STR.c_str(), O_RDONLY | O_NONBLOCK);
+
+        if (read_fd == -1) {
+            mvwprintw(window, row++, 1, "Error making FIFO pipes");
+            mvwprintw(window, row++, 1, "\t %s", strerror(errno));
+            //wrefresh(window);
+            //std::this_thread::sleep_for(10s);
+            close(read_fd);
+            IFIFO_opened = false;
+            return -1;
+        }
+
+        //REF: fd set
+        fds[0].fd = read_fd;
+        fds[0].events = POLLIN;
+        IFIFO_opened = true;
+    }
+
+    if(!OFIFO_opened){
+        int write_fd = open(OFIFOPATH_STR.c_str(), O_WRONLY | O_NONBLOCK);
+        if(write_fd == -1){
+            if(errno == ENXIO){
+                mvwprintw(window, row++ + 20, 1, "Someone isn't listening");
+                mvwprintw(window, row++ + 20, 1, "on the other side");
+                return 0;
+            }
+            else{
+                mvwprintw(window, row++, 1, "Error making FIFO pipes");
+                mvwprintw(window, row++, 1, " %s", strerror(errno));
+                close(write_fd);
+                OFIFO_opened = false;
+                return -1;
+            }
+        }
+
+        //REF: fd set
+        fds[1].fd = write_fd;
+        fds[1].events = POLLOUT;
+        OFIFO_opened = true;
+    }
+    
+    return 1;
+}
 
 //DIRECTIVE: MAIN
 //processes for the entire program
-void init(struct pollfd* fds, int& socket_fd){
-    signal(SIGPIPE, SIG_IGN);
+int init(WINDOW* window, int& socket_fd){
+    //wclear(window);
+    //box(window, '|', '-');
+    mvwprintw(window, 1, 1, "Initializing...");
+    //wrefresh(window);
+    int prow = 2;
 
-    cout << "Making system pipes " << endl;
-    createFIFO(OFIFOPATH_STR);
-    createFIFO(IFIFOPATH_STR);
 
-    int read_fd = open(IFIFOPATH_STR.c_str(), O_RDONLY);//| O_NONBLOCK);
-    int write_fd = open(OFIFOPATH_STR.c_str(), O_WRONLY);// | O_NONBLOCK);
-
-    if (read_fd == -1 || write_fd == -1) {
-        cerr << "Error opening FIFOs" << endl;
-        closeAll();
-        exit(1);
-    }
-
-    cout << "Success on making pipes " << endl;
-
-    //REF: fd set
-    fds[0].fd = read_fd;
-    fds[0].events = POLLIN;
-    fds[1].fd = write_fd;
-    fds[1].events = POLLOUT;
-
-    create_socket(socket_fd);
-}
-
-int ping(struct pollfd* fds, char* buffer, int& socket_fd){
-    //check to see if the fifo fd is worth blocking for data
-    int timeout = 5000; // 5s timeout
-    int ret = poll(fds, 1, timeout);
-    if(ret == -1){
-        cout << "ERROR: fd gives error when polling" << endl;
+    mvwprintw(window, prow++, 1, "Making system pipes");
+    //wrefresh(window);
+    int res1 = createFIFO(OFIFOPATH_STR);
+    if(res1 < 0){
+        mvwprintw(window, prow++, 1, "Error creating FIFO: ");
+        mvwprintw(window, prow++, 1, " %s",strerror(errno));
+        closeAll(socket_fd);
         return -1;
     }
-    else if(ret == 0){
-        cout << "Nothing on pipe" << endl;
-        return 0;
+    int res2 = createFIFO(IFIFOPATH_STR);
+    if(res2 < 0){
+        mvwprintw(window, prow++, 1, "Error creating FIFO: ");
+        mvwprintw(window, prow++, 1, " %s", strerror(errno));
+        closeAll(socket_fd);
+        return -1;
     }
 
+    mvwprintw(window, prow++, 1, "Success on making pipes");
+    mvwprintw(window, prow++, 1, "Making sockets...");
+    //wrefresh(window);
+
+    int res = create_socket(window, prow, socket_fd);
+    if(res < 0){
+        mvwprintw(window, prow++, 1, "Error on making socket");
+        //wrefresh(window);
+        closeAll(socket_fd);
+        return -1;
+    }
+    mvwprintw(window, prow++, 1, "Success on making sockets");
+    wrefresh(window);
+    return 1;
+}
+
+int ping(WINDOW* window, struct pollfd* fds, char* buffer, int& socket_fd){
+    //wclear(window);
+    //box(window, '|', '-');
+    mvwprintw(window, 1, 1, "Querying FIFO");
+    //wrefresh(window);
     int expected = 0;
     ssize_t successStatus = read(fds[0].fd, &expected, sizeof(expected));
     if (successStatus > 0) {
@@ -286,37 +387,19 @@ int ping(struct pollfd* fds, char* buffer, int& socket_fd){
         while(total_read < expected){
             ssize_t bytesRead = read(fds[0].fd, buffer + total_read, expected - total_read);
             buffer[bytesRead + total_read] = '\0';
-            cout << "Received query: " << buffer << endl;
+            //wprintw("Received query: %s", buffer);
             total_read += bytesRead;
         }
+        string trunc = buffer;
+        int charsRead = trunc.length();
+        trunc.resize(10);
+        mvwprintw(window, 2, 1, "Received query: %s (%d chars read)", trunc.c_str(), charsRead);
+        //wrefresh(window);
 
-        //We can just redirect this directly to the socket
-        /*
-        //process the response
-        string buffer_str = buffer;
-
-        if (startsWith(buffer, "search", 6)) {
-            string topic = buffer_str.substr(7);
-            //TODO
-            //send this query to the socket
-        } else if (startsWith(buffer, "get_links", 9)) {
-            string topic = buffer_str.substr(10);
-            string smartTopic = buffer_str.substr(10 + topic.length() + 1);
-            //TODO
-            //send this query to the socket
-        } else if (startsWith(buffer, "blog_data", 9)) {
-            string topic = buffer_str.substr(10);
-            //TODO
-            //send this query to the socket
-        } else {
-            cerr << "Error: Unknown query!" << endl;
-        }
-        //TODO
-        //handle the write part
-        */
-
-        if(!write_to_socket(socket_fd, buffer, expected)){
-            cout << "ERROR: failed to write to socket!" << endl;
+        int prow = 3;
+        if(!write_to_socket(window, prow, socket_fd, buffer, expected)){ 
+            mvwprintw(window, prow++, 1, "ERROR: failed to write to socket!");  
+            //wrefresh(window);
             return -1;
         }
 
@@ -327,7 +410,8 @@ int ping(struct pollfd* fds, char* buffer, int& socket_fd){
         //Write to fifo to return the results
         int status = write(fds[1].fd, "got it!", 7);
         if(status == -1){
-            std::cerr << "Error writing to fifo: " << strerror(errno) << std::endl;
+            mvwprintw(window, prow++, 1, "Error writing to fifo: %s", strerror(errno));
+            //wrefresh(window);
             return -1;
         }
     }
@@ -335,61 +419,199 @@ int ping(struct pollfd* fds, char* buffer, int& socket_fd){
 }
 
 //DIRECTIVE: THREAD
-atomic<bool> running_job(true);
-void communicator_job(){
-    cout << "Initiating the communicator"  << endl;
+//atomic<bool> running_job(true);
+void communicator_job(WINDOW* initwindow, WINDOW* window, WINDOW* userwindow, WINDOW* backwindow){
+    //wclear(window);
+    //wrefresh(window); wrefresh(userwindow); refresh();
+    box(window, '|', '-');
+    box(userwindow, '|', '-');
+    mvwprintw(window, 1, 1, "Initiating the communicator");
+    wrefresh(window);
+
+    bool running_job = true;
+
     int socket_fd;
     struct pollfd fds[2];
-    init(fds, socket_fd);
+    int res = init(initwindow, socket_fd);
+    if(res < 0){
+        mvwprintw(window, 2, 1, "Initialization fail");
+        wrefresh(window);
+        wrefresh(backwindow);
+        wrefresh(initwindow);
+        return;
+    }
+    mvwprintw(window, 2, 1, "Initialization success");
+    //wrefresh(window);
 
+    //REF: vars for maiin loop
     bool connectedToASocketman = false;
     int client_socket_fd = -1;
 
-    //TODO
-    //we need an exit condition for the while loop
-    cout << "Running the communicator" << endl;
+    int IFIFO_opened = 0;
+    int OFIFO_opened = 0;
+
+    auto pingClockTick = std::chrono::high_resolution_clock::now();
+
+    //REF: main loop
+    mvwprintw(window, 3, 1, "Running the communicator");
     char buffer[BUFFER_SIZE];
+
+    //refresh();
+    wrefresh(window);
+    std::this_thread::sleep_for(1s);
+    wclear(window);
+    box(window, '|', '-');
+
+    int windowRow = 1;
     while (running_job) {
-        //attempt to connect to 24hr socketman
-        if(!connectedToASocketman){
-            client_socket_fd = wait_for_socket(socket_fd);
-            connectedToASocketman = client_socket_fd;
+        windowRow = 1;
+        wrefresh(window);
+        //refresh();
+        //wclear(window);
+        //wclear(userwindow);
+        mvwprintw(userwindow, 1, 1,"Press q to quit: ");
+        char c = wgetch(userwindow);
+        if(c == 'q'){
+            running_job = false;
+            wprintw(userwindow, "quitting...");
+            wrefresh(userwindow);
+            break;
         }
-        else if(ping_socket(client_socket_fd) <= 0){
-            cout << "ping failed" << endl;
-            connectedToASocketman = false;
-            client_socket_fd = -1;
+
+        //wrefresh(userwindow); 
+        //refresh();
+        
+        mvwprintw(window, windowRow++, 1,"Status:");
+        //attempt to connect to 24hr socketman
+        //wclear(backwindow);
+        //CHECKOUT: FIFO_logic1
+        int localfifostatus = connectToFIFO(backwindow, IFIFO_opened, OFIFO_opened, fds); 
+        int fifoErrorNo = errno;
+
+        int onlinesocketstatus = 1;
+        if(!connectedToASocketman){
+            client_socket_fd = wait_for_socket(backwindow, socket_fd);
+            connectedToASocketman = client_socket_fd > 0;
+            onlinesocketstatus = connectedToASocketman;
+        }
+        else {
+            std::chrono::duration<double> timePassedSincePing = 
+                std::chrono::high_resolution_clock::now() - pingClockTick;
+            if(timePassedSincePing > 10s){
+                int ret = ping_socket(backwindow, client_socket_fd) <= 0;
+                if(ret){
+                    connectedToASocketman = false;
+                    client_socket_fd = -1;
+                    onlinesocketstatus = 0;
+                }
+                pingClockTick = std::chrono::high_resolution_clock::now();
+                windowRow++;
+            }
+            else{
+                mvwprintw(window, windowRow++, 1, "%0.3f until next ping ", 10 - timePassedSincePing.count());
+            }
+        }
+
+        if(localfifostatus > 0){
+            mvwprintw(window, windowRow++, 1, "Fifo Status: O    ");
+            mvwprintw(window, windowRow++, 1, "                  ");
+        }
+        else if(localfifostatus == 0){
+            mvwprintw(window, windowRow++, 1, "Fifo Status: EMPTY");
+            mvwprintw(window, windowRow++, 1, "                  ");
+            wrefresh(backwindow);
+        }
+        else{
+            mvwprintw(window, windowRow++, 1, "Fifo Status: X    ");
+            mvwprintw(window, windowRow++, 1, "  %s", strerror(fifoErrorNo));
+            wrefresh(backwindow);
+        }
+
+        if(onlinesocketstatus){
+            mvwprintw(window, windowRow++, 1, "Socket Status: O");
+        }
+        else{
+            mvwprintw(window, windowRow++, 1, "Socket Status: X");
+        }
+        
+        //mvwprintw(window, windowRow++, 1, "WTF %d %d %d", localfifostatus, onlinesocketstatus, status);
+
+        if((localfifostatus > 0) && onlinesocketstatus){ 
             continue;
         }
 
-        //check the query and look for anything to send to socket man
-        cout << "\n=>Reading the webapp for requests" << endl;
-        int ret = ping(fds, buffer, client_socket_fd);
+
+        //cout << "\n=>Reading the webapp for requests" << endl;
+
+//====> ping handles both fifo and socket writing
+        int ret = ping(backwindow, fds, buffer, client_socket_fd);
         if(ret < 0){
             running_job = false;
+            mvwprintw(window, windowRow++, 1, "Looks like we met some issues...");
+            mvwprintw(window, windowRow++, 1, "Will close in 10 secs(-ish)");
+            wrefresh(window);
+            std::this_thread::sleep_for(10s);
         }
+
+        //wrefresh(window); 
+        //std::this_thread::sleep_for(500ms);
     }
 
-    closeAll();
+    closeAll(socket_fd);
 }
 
+//REF: main function
 int main(){
-    thread com_thread(communicator_job);
+    cout << "Don't look at me. You should be seeing 3 boxes" << endl;
+    initscr();
+    cbreak();
+    refresh();
 
-    cout << "Remember to press q to quit:" << endl;
+    WINDOW* initWin = newwin(15, 50, 0, 0);
+    WINDOW* backWin = newwin(23, 35, 0, 51);
+    WINDOW* statusWin = newwin(15, 50, 16, 0);
+    WINDOW* userWin = newwin(3, 50, 31, 0);
+    nodelay(userWin, TRUE);
+
+    /*
+    while(true){
+        wclear(statusWin);
+        wclear(userWin);
+        wprintw(statusWin, "WTF");
+        wprintw(userWin, "WTF2");
+        wrefresh(statusWin);
+        wrefresh(userWin);
+        refresh();
+    }
+    */
+
+    //thread com_thread(communicator_job, statusWin, userWin);
+    communicator_job(initWin, statusWin, userWin, backWin);
+    refresh();
+    std::this_thread::sleep_for(2000ms);
+
+    /*
     char c;
     while(1){
-        cin >> c;
+        box(userWin, '|', '-');
+        wprintw(userWin, "Press q to quit:");
+        c = getch();
         if(c == 'q'){
             break;
         }
+        wrefresh(userWin);
         //take a break, give space for other resources
         std::this_thread::sleep_for(500ms);
     }
+    */
 
-    cout << "Exiting the code..." << endl;
-    running_job = false;
-    com_thread.join();
+    //running_job = false;
+    //com_thread.join();
     
+    delwin(initWin);
+    delwin(statusWin);
+    delwin(userWin);
+    delwin(backWin);
+    endwin();
     return 0;
 }
