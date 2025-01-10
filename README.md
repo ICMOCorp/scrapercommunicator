@@ -2,7 +2,7 @@
 
 So the image below gives a kind of idea as to the intent of this little snippet of code.
 
-![IMAGE MISSING](drawing.png)
+![IMAGE MISSING](scraper_image.png)
 
 What's going on is the the server hosts the webapp, and we want a
 service where the scraping isn't stuck to one location. Whether I'm on
@@ -17,4 +17,3 @@ doesn't need to do any socket programming. Instead, the scraper and the
 communicator are solely responsible for connections.
 
 # CHECKOUT
-![IMAGE MISSING](FIFO_logic.jpg)

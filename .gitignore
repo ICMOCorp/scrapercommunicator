@@ -1,0 +1,13 @@
+*
+!.gitignore
+!Makefile
+
+!*.cpp
+remote.cpp
+service.cpp
+
+!*.hpp
+
+!README.md
+!*.png
+!*.jpg
