@@ -20,6 +20,7 @@ extern const std::string FIFOoutputpath;
 
 
 extern std::atomic<int> FIFO_status;
+extern std::atomic<bool> FIFO_hard_reset;
 #define SHUTDOWNCODE                     -10
 
 #define FIFOSTATUS_INIT                    0                 
@@ -30,9 +31,11 @@ extern std::atomic<int> FIFO_status;
 #define FIFOSTATUS_CLOSED                 -2
 #define FIFOSTATUS_BADCONNECT             -3
 #define FIFOSTATUS_NOCLIENT               -4
+#define FIFOSTATUS_UNEXPECTEDCLOSE        -5
 
 //string functions
-int strcomp(const char* a, const char* b, uint32_t size);
+uint32_t readInteger(char* buffer);
+void writeInteger(char* buffer, uint32_t num);
 
 int cleanup_fifo();
 
@@ -46,7 +49,7 @@ int poll_fifo(struct pollfd* readPFD, int timeout);
 
 uint32_t read_from_fifo(struct pollfd* readPFD, char* buffer, size_t arraySize, uint32_t msgLength);
 
-int write_to_fifo(struct pollfd* writePFD, char* buffer);
+int write_to_fifo(struct pollfd* writePFD, char* buffer, size_t arraySize, uint32_t msgLength);
 
 void fifo_error(struct pollfd* readPFD, struct pollfd* writePFD, int errorCode);
 

@@ -1,3 +1,4 @@
+#include "socket_process.hpp"
 #include "fifo_process.hpp"
 #include "shared_stuff.hpp"
 
@@ -6,6 +7,24 @@ const std::string FIFOinputpath = (fs::path(FIFOdirpath) / "query").string();
 const std::string FIFOoutputpath = (fs::path(FIFOdirpath) / "response").string();
 
 std::atomic<int> FIFO_status(-1);
+std::atomic<bool> FIFO_hard_reset(false);
+
+uint32_t readInteger(char* buffer){
+    uint32_t val = 0;
+    for(int i = 3;i>=0;i--){
+        val <<= 8;
+        val |= buffer[i];
+    }
+    return val;
+}
+
+void writeInteger(char* buffer, uint32_t num){
+    std::memset(buffer, 0, 4);
+    for(int i = 0;i<4;i++){
+        buffer[i] = (num >> i * 8) & 255;
+    }
+    buffer[4] = '\0';
+}
 
 int cleanup_fifo(){
     if(!fs::is_directory(FIFOdirpath)) {
@@ -104,18 +123,14 @@ uint32_t read_from_fifo(struct pollfd* readPFD, char* buffer, size_t arraySize, 
         }
         totalRead += bytesRead;
     }
-    buffer[totalRead] = '\0';
+    if(totalRead < arraySize){
+        buffer[totalRead] = '\0';
+    }
 
     return totalRead;
 }
 
-int write_to_fifo(struct pollfd* writePFD, char* buffer){
-    uint32_t msgLength = std::strlen(buffer);
-    ssize_t bytesWritten = write(writePFD->fd, &msgLength, sizeof(msgLength));
-    if(bytesWritten == 0){
-        return 0;
-    }
-
+int write_to_fifo(struct pollfd* writePFD, char* buffer, size_t arraySize, uint32_t msgLength){
     size_t totalWritten = 0;
     while(totalWritten < msgLength){
         int written = write(writePFD->fd, buffer + totalWritten, msgLength - totalWritten);
@@ -147,6 +162,9 @@ void fifo_job(){
         warning.store(WARNING_BADCREATION);
         return;
     }
+
+    uint32_t msgLength;
+    char msgLengthPtr[5];
     
     char local_buffer[Megabyte+1];
     std::memset(local_buffer, 0, Megabyte+1);
@@ -158,6 +176,10 @@ void fifo_job(){
     FIFO_status.store(FIFOSTATUS_INIT);
 
     while(FIFO_status.load() != SHUTDOWNCODE){
+        if(FIFO_hard_reset.load()){
+            FIFO_hard_reset.store(false);
+            fifo_error(&readPFD, &writePFD, FIFOSTATUS_UNEXPECTEDCLOSE);
+        }
         int fifostatus = FIFO_status.load();
         if(paused.load()){continue;}
         if(fifostatus < 0 ||
@@ -187,12 +209,14 @@ void fifo_job(){
                 continue;
             }
 
-            uint32_t msgLength;
-            char* msgLengthPtr = (char* ) &msgLength;
-            read_from_fifo(&readPFD, msgLengthPtr, sizeof(msgLength), sizeof(msgLength));
+            //for debugging
+            //uint32_t fortest = read_from_fifo(&readPFD, local_buffer, Megabyte, Megabyte);
 
+            
+            uint32_t helpme = read_from_fifo(&readPFD, msgLengthPtr, sizeof(msgLengthPtr), 4);
+            msgLength = readInteger(msgLengthPtr);
 
-            res = poll_fifo(&readPFD, 10000);
+            res = poll_fifo(&readPFD, 1000);
             if(res == -1){
                 fifo_error(&readPFD, &writePFD, FIFOSTATUS_BADPOLL);
                 continue;
@@ -201,16 +225,30 @@ void fifo_job(){
                 warning.store(WARNING_POLLTIMEOUT);
                 continue;
             }
-            uint32_t readLength = read_from_fifo(&readPFD, local_buffer, sizeof(local_buffer), msgLength);
-            if(msgLength > 0 &&
-                (msgLength != 4 || !strcomp(local_buffer, "PING", msgLength))){
+            uint32_t readLengthU = read_from_fifo(&readPFD, local_buffer, sizeof(local_buffer), msgLength);
+            int readLength = (int) readLengthU;
+            
+            if(readLength > 0){
+                //sendToFIFO(local_buffer); // for debugging
+            }
+            
+            if((readLength != 4 || !strcomp(local_buffer, "PING", msgLength))){
                 fifo_error(&readPFD, &writePFD, FIFOSTATUS_CLOSED);
                 warning.store(WARNING_BADMESSAGE);
                 continue;
             }
 
+            writeInteger(msgLengthPtr, 4);
+            res = write_to_fifo(&writePFD, msgLengthPtr, sizeof(msgLengthPtr), 4);
+            if(res == 0){
+                fifo_error(&readPFD, &writePFD, FIFOSTATUS_CLOSED);
+                warning.store(WARNING_BADMESSAGE);
+                continue;
+            }
+
+            
             std::strcpy(local_buffer, "PONG");
-            res = write_to_fifo(&writePFD, local_buffer);
+            res = write_to_fifo(&writePFD, local_buffer, sizeof(local_buffer), msgLength);
             if(res == 0){
                 fifo_error(&readPFD, &writePFD, FIFOSTATUS_CLOSED);
                 warning.store(WARNING_BADMESSAGE);
@@ -229,9 +267,9 @@ void fifo_job(){
                 continue;
             }
 
-            uint32_t msgLength;
-            char* msgLengthPtr = (char* ) &msgLength;
-            read_from_fifo(&readPFD, msgLengthPtr, sizeof(msgLength), sizeof(msgLength));
+            res = read_from_fifo(&readPFD, msgLengthPtr, sizeof(msgLengthPtr), 4);
+            msgLength = readInteger(msgLengthPtr);
+            int val = (int) res;
 
 
             res = poll_fifo(&readPFD, 1000);
@@ -244,32 +282,73 @@ void fifo_job(){
                 continue;
             }
             uint32_t readLength = read_from_fifo(&readPFD, local_buffer, sizeof(local_buffer), msgLength);
-            if(msgLength > 7 && strcomp(local_buffer, "search ", 7) ||
-                msgLength > 9 && strcomp(local_buffer, "analysis ", 9)){
+            if((msgLength > 7 && strcomp(local_buffer, "search ", 7)) ||
+                (msgLength > 9 && strcomp(local_buffer, "analysis ", 9))){
                     sendToSocket(local_buffer);
+            }
+            else if(msgLength == 6 && strcomp(local_buffer, "online", 6)){
+                if(socket_state.load() == SOCKET_CONNECTED){
+                    std::strcpy(local_buffer, "RESULT:\nSOCKET ONLINE");
+                }
+                else{
+                    std::strcpy(local_buffer, "RESULT:\nSOCKET OFFLINE");
+                }
+
+                msgLength = std::strlen(local_buffer);
+                writeInteger(msgLengthPtr, msgLength);
+                res = write_to_fifo(&writePFD, msgLengthPtr, sizeof(msgLengthPtr), 4);
+                //TODO
+                //check the res value
+
+                res = write_to_fifo(&writePFD, local_buffer, sizeof(local_buffer), msgLength);
+                //TODO
+                //check the res value
+                continue;
+            }
+            else{
+                std::strcpy(local_buffer, "RESULT:\nBAD_QUERY");
+
+                msgLength = std::strlen(local_buffer);
+                writeInteger(msgLengthPtr, msgLength);
+                res = write_to_fifo(&writePFD, msgLengthPtr, sizeof(msgLengthPtr), 4);
+                //TODO
+                //check the res value
+
+                res = write_to_fifo(&writePFD, local_buffer, sizeof(local_buffer), msgLength);
+                //TODO
+                //check the res value
+
+                warning.store(WARNING_BADQUERY);
+                continue;
             }
 
             FIFO_status.store(FIFOSTATUS_BUSY);
         }
         else if(fifostatus == FIFOSTATUS_BUSY){
-            std::memset(local_buffer, 0, sizeof(local_buffer));
-            std::strcpy(local_buffer, "progress");
-            sendToSocket(local_buffer);
+            sendToSocket("progress");
 
             int gotResponse = 0;
             //try 1000 times
-            for(int j = 0;!gotResponse && j<1000;j++){
+            while(!gotResponse){
                 int res = readFromSocket(local_buffer);
                 if(!res){
                     continue;
                 }
 
-                res = write_to_fifo(&writePFD, local_buffer);
+                msgLength = std::strlen(local_buffer);
+                writeInteger(msgLengthPtr, msgLength);
+                res = write_to_fifo(&writePFD, msgLengthPtr, sizeof(msgLengthPtr), 4);
+                //TODO
+                //check res
+
+                res = write_to_fifo(&writePFD, local_buffer, sizeof(local_buffer), msgLength);
+                //tODO
+                //check res
                 gotResponse = 1;
             }
 
-            if(strcomp(local_buffer, "RESULT", 6)){
-                FIFO_status.store(FIFOSTATUS_LISTENING);
+            if(strcomp(local_buffer, "RESULT:", 7)){
+                FIFO_status.store(FIFOSTATUS_EMPTY);
             }
         }
         else{

@@ -2,48 +2,56 @@
 #include "fifo_process.hpp"
 #include "socket_process.hpp"
 
+#include <signal.h>
 #include <cstdlib>
+void sigpipeError(int s){
+    printf("Caught SIGPIPE");
+    FIFO_hard_reset.store(true);
+}
 
 #include <cstring>
 #include <string>
 #include <vector>
+#include <queue>
+#include <algorithm>
 
 #include <thread>
 
 #include <ncurses.h>
 
-#define HISTORY_SIZE              20
+#define HISTORY_SIZE              15
 #define PANE_WIDTH                90
 #define PANE_HEIGHT               57
 
-void addToHistory(int& head, std::vector<std::string>& history, char* toAdd, std::vector<int>& dirHistory, int newDir, int& currSize){
+void addToHistory(std::queue<std::string>& history, char* toAdd, std::queue<int>& dirHistory, int newDir){
     std::string toAddStr(toAdd, PANE_WIDTH-2);
-    int prev = (head - 1 + currSize) % currSize;
-    head = prev;
+    history.push(toAddStr);
 
-    std::swap(history[head], toAddStr);
-    dirHistory[head] = newDir;    
-
-    currSize++;
+    dirHistory.push(newDir);
 }
 
-void printBuffer(WINDOW* window, int& head, std::vector<std::string>& history, std::vector<int>& dirHistory, int& currSize){
-    mvwprintw(window, 1, 1, "Buffer History:          ");
+void printBuffer(WINDOW* window, std::queue<std::string>& history, std::queue<int>& dirHistory){
+    int historySize = history.size();
+    mvwprintw(window, 1, 1, "Buffer History (size: %d):          ", historySize);
+    int currSize = std::min(historySize, HISTORY_SIZE);
     for(int i =0;i<currSize;i++){
-        int index = (head + i) % currSize;
-        std::string buffer = history[index];
-        int bd = dirHistory[index];
+        std::string buffer = history.front();
+        history.pop();
+        int bd = dirHistory.front();
+        dirHistory.pop();
         if(bd == TOSOCKET){
             mvwprintw(window, i * 3 + 2, 1, ">>>>>>>>>>>>>>>>>>>>>>>>TO SOCKET>>>>>>>>>>>>>>>>>>>>>>>>>");
-            for(int i = 0;i<PANE_WIDTH-2;i++){
-                mvwprintw(window, i * 3 + 3, i+1, "%c", buffer[i]);
+            int prSize = std::min(PANE_WIDTH-2, (int)buffer.length());
+            for(int j = 0;j<prSize;j++){
+                mvwprintw(window, i * 3 + 3, j+1, "%c", buffer[j]);
             }
             mvwprintw(window, i * 3 + 4, 1, ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>");
         }
         else if(bd == TOFIFO){
             mvwprintw(window, i * 3 + 2, 1, "<<<<<<<<<<<<<<<<<<<<<<<<TO FIFO<<<<<<<<<<<<<<<<<<<<<<<<<<<");
-            for(int i = 0;i<PANE_WIDTH-2;i++){
-                mvwprintw(window, i * 3 + 3, i+1, "%c", buffer[i]);
+            int prSize = std::min(PANE_WIDTH-2, (int)buffer.length());
+            for(int j = 0;j<prSize;j++){
+                mvwprintw(window, i * 3 + 3, j+1, "%c", buffer[j]);
             }
             mvwprintw(window, i * 3 + 4, 1, "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<");
         }
@@ -51,8 +59,18 @@ void printBuffer(WINDOW* window, int& head, std::vector<std::string>& history, s
             mvwprintw(window, i * 3 + 2, 1, "                                                          ");
             mvwprintw(window, i * 3 + 3, 1, "Direction Value: %58d", bd);
             mvwprintw(window, i * 3 + 4, 1, "                                                          ");
-
         }
+        history.push(buffer);
+        dirHistory.push(bd);
+    }
+    for(int i = 0;i<historySize - currSize;i++){
+        std::string toAdd = history.front();
+        history.pop();
+        history.push(toAdd);
+
+        int bd = dirHistory.front();
+        dirHistory.pop();
+        dirHistory.push(bd);
     }
     wrefresh(window);
 }
@@ -90,6 +108,9 @@ void printFIFOStatus(WINDOW* window, int lastwarning){
             break;
         case FIFOSTATUS_NOCLIENT:
             std::strcpy(msg, "Nobody is listening to FIFO. Where's webapp?");
+            break;
+        case FIFOSTATUS_UNEXPECTEDCLOSE:
+            std::strcpy(msg, "FIFO unexpectedly closed. Webapp prob shut down");
             break;
         default:
             std::strcpy(msg, "Status is undefined...");
@@ -138,6 +159,7 @@ void printSocketStatus(WINDOW* window, int lastwarning){
 }
 
 int main(){
+    signal(SIGPIPE, sigpipeError);
     initscr();
     cbreak();
 
@@ -166,10 +188,8 @@ int main(){
     int lastSocketWarning = 0;
 
     std::string prototype(PANE_WIDTH-2, ' ');
-    std::vector<std::string> history(HISTORY_SIZE, prototype);
-    std::vector<int> dirHistory(HISTORY_SIZE);
-    int head = 0;
-    int currSize = 0;
+    std::queue<std::string> history;
+    std::queue<int> dirHistory;
     char local_buffer[Megabyte+1];
 
     int count = 0;
@@ -198,9 +218,19 @@ int main(){
 
         if(bufferChanged.load()){
             readFromBuffer(local_buffer);   
-            addToHistory(head, history, local_buffer, dirHistory, bufferDirection.load(), currSize);
+            addToHistory(history, local_buffer, dirHistory, bufferDirection.load());
+            bufferChanged.store(false);
+            
+
+            //TRAFFIC MANAGER
+            //this part handles the traffic
+            if(bufferDirection.load() == TOSOCKET){
+                if(strcomp(buffer, "progress", 8) && socket_state.load() != SOCKET_CONNECTED){
+                    sendToFIFO("RESULT:\nSCRAPER OFFLINE");
+                }
+            }
         }
-        printBuffer(bufferwin, head, history, dirHistory, currSize);
+        printBuffer(bufferwin, history, dirHistory);
 
         char loadingChar = loading[index];
         printPrompt(prompt, loadingChar);
