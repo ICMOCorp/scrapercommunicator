@@ -91,7 +91,7 @@ void printFIFOStatus(WINDOW* window, int lastwarning){
         case FIFOSTATUS_LISTENING:
             std::strcpy(msg, "FIFO opened. Awaiting \"PING\"");
             break;
-        case FIFOSTATUS_EMPTY:
+        case FIFOSTATUS_CONNECTED:
             std::strcpy(msg, "Connected And Awaiting query");
             break;
         case FIFOSTATUS_BUSY:
@@ -225,8 +225,13 @@ int main(){
             //TRAFFIC MANAGER
             //this part handles the traffic
             if(bufferDirection.load() == TOSOCKET){
-                if(strcomp(buffer, "progress", 8) && socket_state.load() != SOCKET_CONNECTED){
-                    sendToFIFO("RESULT:\nSCRAPER OFFLINE");
+                if(socket_state.load() != SOCKET_CONNECTED){
+                    sendToFIFO("ACK:\nSCRAPER OFFLINE");
+                }
+            }
+            if(bufferDirection.load() == TOFIFO){
+                if(FIFO_status.load() != FIFOSTATUS_CONNECTED){
+                    sendToSocket("ACK:\nFIFO OFFLINE");
                 }
             }
         }
@@ -251,7 +256,7 @@ int main(){
             paused.store(nextP);
         }
 
-        //loading to indicate action
+        //loading animation to indicate action
         count ++;
         if(count >= 1000){
             count = 0;

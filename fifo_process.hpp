@@ -25,7 +25,7 @@ extern std::atomic<bool> FIFO_hard_reset;
 
 #define FIFOSTATUS_INIT                    0                 
 #define FIFOSTATUS_LISTENING               1
-#define FIFOSTATUS_EMPTY                   2
+#define FIFOSTATUS_CONNECTED               2
 #define FIFOSTATUS_BUSY                    3
 #define FIFOSTATUS_BADPOLL                -1
 #define FIFOSTATUS_CLOSED                 -2
@@ -34,8 +34,6 @@ extern std::atomic<bool> FIFO_hard_reset;
 #define FIFOSTATUS_UNEXPECTEDCLOSE        -5
 
 //string functions
-uint32_t readInteger(char* buffer);
-void writeInteger(char* buffer, uint32_t num);
 
 int cleanup_fifo();
 

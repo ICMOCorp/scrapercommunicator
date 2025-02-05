@@ -10,6 +10,23 @@ std::atomic<bool> bufferChanged(false);
 char buffer[Megabyte + 1];
 std::atomic<int> warning(0);
 
+uint32_t readInteger(char* buffer){
+    uint32_t val = 0;
+    for(int i = 3;i>=0;i--){
+        val <<= 8;
+        val |= buffer[i];
+    }
+    return val;
+}
+
+void writeInteger(char* buffer, uint32_t num){
+    std::memset(buffer, 0, 4);
+    for(int i = 0;i<4;i++){
+        buffer[i] = (num >> i * 8) & 255;
+    }
+    buffer[4] = '\0';
+}
+
 void writeToBuffer(const char* str){
     std::lock_guard<std::mutex> lock(mtx);
 
@@ -19,6 +36,7 @@ void writeToBuffer(const char* str){
     //also check the size difference as "progress" and "progres"
     // are different but wont be noted with just the given for
     // loop
+    int bd = bufferDirection.load();
 
     int buffLen = std::strlen(buffer);
     int strLen = std::strlen(str);
@@ -40,9 +58,25 @@ void readFromBuffer(char* res){
     std::strcpy(res, buffer);
 }
 
+int pollBuffer(int desiredBD, int timeout){
+    auto poll_start = std::chrono::system_clock::now();
+    std::chrono::duration<double> elapsed = std::chrono::system_clock::now() - poll_start;
+
+    while(elapsed.count() < timeout){
+        if(bufferDirection.load() == desiredBD){
+            return 1;
+        }
+        elapsed = std::chrono::system_clock::now() - poll_start;
+        //QUESTION:
+        //do we add a sleep here?
+    }
+
+    return 0;
+}
+
 void sendToSocket(const char* str){
-    writeToBuffer(str);
     bufferDirection.store(TOSOCKET);
+    writeToBuffer(str);
 }
 int readFromSocket(char* str){
     int dir = bufferDirection.load();
@@ -54,8 +88,8 @@ int readFromSocket(char* str){
 }
 
 void sendToFIFO(const char* str){
-    writeToBuffer(str);
     bufferDirection.store(TOFIFO);
+    writeToBuffer(str);
 }
 int readFromFIFO(char* res){
     int dir = bufferDirection.load();
@@ -118,6 +152,28 @@ std::string interpret_warning(int value){
 int strcomp(const char* a, const char* b, uint32_t length){
     for(int i = 0;i<length;i++){
         if(a[i] != b[i]){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int querycomp(const char* a, const char* b, uint32_t length, char delim){
+    size_t aLen = std::strlen(a);
+    int index = -1;
+    for(int i = 0;i<aLen;i++){
+        if(a[i] == delim){
+            index = i+1;
+            break;
+        }
+    }
+
+    if(index < 0 || index >= aLen){
+        return -1;
+    }
+
+    for(int i = 0;i<length;i++){
+        if(a[index + i] != b[i]){
             return 0;
         }
     }

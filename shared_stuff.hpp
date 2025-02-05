@@ -4,6 +4,11 @@
 #include <mutex>
 #include <atomic>
 
+#include <thread>
+#include <chrono>
+using namespace std::this_thread;       //sleep_for, sleep_until
+using namespace std::chrono_literals;   //ns, us, ms, s, h, etc
+
 extern std::atomic<bool> paused;
 
 #define Megabyte (1024 * 1024)
@@ -40,6 +45,7 @@ extern std::atomic<int> warning;
 
 void writeToBuffer(const char* str);
 void readFromBuffer(char* res);
+int pollBuffer(int desiredBD, int timeout);
 
 void sendToSocket(const char* str);
 int readFromSocket(char* str);
@@ -49,4 +55,8 @@ int readFromFIFO(char* res);
 
 std::string interpret_warning(int value);
 int strcomp(const char* a, const char* b, uint32_t length);
+int querycomp(const char* a, const char* b, uint32_t length, char delim);
+
+uint32_t readInteger(char* buffer);
+void writeInteger(char* buffer, uint32_t num);
 

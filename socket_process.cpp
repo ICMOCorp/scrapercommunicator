@@ -103,8 +103,9 @@ int ping_connection(struct pollfd* clientfds, char* buffer){
 }
 
 int send_to_client(int& clientfd, const char* msg){
-    int32_t msgLength = htonl(std::strlen(msg));
-    char* lenAsStr = (char*)&msgLength;
+    uint32_t msgLength = std::strlen(msg);
+    char lenAsStr[5];
+    writeInteger(lenAsStr, msgLength);
 
     size_t totalSent = 0;
     while(totalSent < sizeof(lenAsStr)){
@@ -140,18 +141,17 @@ int read_from_client(struct pollfd* fds, char* msg){
         return 0;
     }
 
-    int msgLength;
-    int32_t readMsgLength;
-    char* lenAsStr = (char*)&msgLength;
-    size_t totalRead = 0;
-    while(totalRead < sizeof(lenAsStr)){
-        ssize_t bytesRead = recv(fds[0].fd, lenAsStr + totalRead, sizeof(lenAsStr) - totalRead, 0);
+    char msgLengthPtr[5];
+
+    uint32_t totalRead = 0;
+    while(totalRead < 4){
+        ssize_t bytesRead = recv(fds[0].fd, msgLengthPtr + totalRead, 4 - totalRead, 0);
         if(bytesRead < 0){
             return -1;
         }
         totalRead += bytesRead;
     }
-    msgLength = ntohl(readMsgLength);
+    uint32_t msgLength = readInteger(msgLengthPtr);
 
     std::memset(msg, 0, sizeof(msg)-1);
 
@@ -172,7 +172,7 @@ int read_from_client(struct pollfd* fds, char* msg){
 }
 
 //is there every a case where closing the socket 
-// fails?
+// fails? (i.e. fd == -1)
 int close_socket(int& fd){
     if(fd != -1){
         shutdown(fd, SHUT_RDWR);
@@ -230,7 +230,7 @@ void socket_job(){
         else if(state == SOCKET_OPENED){
             int res = establish_connection(socketFD, clientFD);
             if(res == -1){
-                socket_error(socketFD, clientFD);
+                //socket_error(socketFD, clientFD);
                 warning.store(WARNING_NOCONNECT);
                 continue;
             }
@@ -240,13 +240,9 @@ void socket_job(){
             socket_state.store(SOCKET_CONNECTED);
         }
         else if(state == SOCKET_CONNECTED){
-            if(readFromFIFO(local_buffer)){
-                if(!(std::strlen(local_buffer) > 7 
-                    && strcomp(local_buffer, "search ", 7)) ||
-                    !(std::strlen(local_buffer) > 9 
-                    && strcomp(local_buffer, "analysis ", 9))){
-                        socket_state.store(SOCKET_REQUESTED);
-                }
+            bool bfc = bufferChanged.load();
+            if(bufferChanged.load() && readFromFIFO(local_buffer)){
+                socket_state.store(SOCKET_REQUESTED);
             }
             else{
                 int res = ping_connection(clientFDS, local_buffer);
@@ -266,9 +262,9 @@ void socket_job(){
         }
         else if(state == SOCKET_REQUESTED){
             if(std::strlen(local_buffer) > 7 
-                && strcomp(local_buffer, "search ", 7) ||
+                && querycomp(local_buffer, "search ", 7, ':') ||
                 std::strlen(local_buffer) > 9 
-                && strcomp(local_buffer, "analysis ", 9)){
+                && querycomp(local_buffer, "analysis ", 9, ':')){
                     int res = send_to_client(clientFD, local_buffer);
                     if(res == -1){
                         socket_error(socketFD, clientFD);
@@ -276,6 +272,10 @@ void socket_job(){
                         continue;
                     }
                     socket_state.store(SOCKET_PROCESSING);
+            }
+            else{
+                sendToFIFO("ACK:Bad Query");
+                socket_state.store(SOCKET_CONNECTED);
             }
         }
         else if(state == SOCKET_PROCESSING){
@@ -289,7 +289,7 @@ void socket_job(){
                 int tries = 0;
                 while(res == 0 && tries < 100){
                     res = read_from_client(clientFDS, local_buffer);
-                    tries ++;
+                    tries++;
                 }
                 if(tries >= 100 || res == -1){
                     socket_error(socketFD, clientFD);

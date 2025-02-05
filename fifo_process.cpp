@@ -1,4 +1,3 @@
-#include "socket_process.hpp"
 #include "fifo_process.hpp"
 #include "shared_stuff.hpp"
 
@@ -8,23 +7,6 @@ const std::string FIFOoutputpath = (fs::path(FIFOdirpath) / "response").string()
 
 std::atomic<int> FIFO_status(-1);
 std::atomic<bool> FIFO_hard_reset(false);
-
-uint32_t readInteger(char* buffer){
-    uint32_t val = 0;
-    for(int i = 3;i>=0;i--){
-        val <<= 8;
-        val |= buffer[i];
-    }
-    return val;
-}
-
-void writeInteger(char* buffer, uint32_t num){
-    std::memset(buffer, 0, 4);
-    for(int i = 0;i<4;i++){
-        buffer[i] = (num >> i * 8) & 255;
-    }
-    buffer[4] = '\0';
-}
 
 int cleanup_fifo(){
     if(!fs::is_directory(FIFOdirpath)) {
@@ -255,9 +237,9 @@ void fifo_job(){
                 continue;
             }
 
-            FIFO_status.store(FIFOSTATUS_EMPTY);
+            FIFO_status.store(FIFOSTATUS_CONNECTED);
         }
-        else if(fifostatus == FIFOSTATUS_EMPTY){
+        else if(fifostatus == FIFOSTATUS_CONNECTED){
             int res = poll_fifo(&readPFD, 1000);
             if(res == -1){
                 fifo_error(&readPFD, &writePFD, FIFOSTATUS_BADPOLL);
@@ -281,7 +263,66 @@ void fifo_job(){
                 warning.store(WARNING_POLLTIMEOUT);
                 continue;
             }
-            uint32_t readLength = read_from_fifo(&readPFD, local_buffer, sizeof(local_buffer), msgLength);
+            uint32_t readLengthU = read_from_fifo(&readPFD, local_buffer, sizeof(local_buffer), msgLength);
+            int readLength = (int) readLengthU;
+            if(readLength <= 0){
+                //TODO
+                //verify this?
+                continue;
+            }
+            sendToSocket(local_buffer);
+
+            //NOTE
+            //This hangs. 
+            //I'm not sure if I like this implementation because 
+            // if two users send a message, we have to separate 
+            // the request into each second.
+            //  - I mean, we could try to shorten the duration
+            //      but do we want each request to wait for its
+            //      previous one?
+            //     - We can always implement a queue system
+            //      where if multiple users send a request within the 
+            //      duration, we can add any non-processing sends 
+            //      to a queue. There's no way someone in our company
+            //      will overload the queue with 1000s of requests.
+            //      and pollBuffer should wait a short enough time before 
+            //      quitting the query entirely
+            res = pollBuffer(TOFIFO, 1000);
+            if(res == 0){
+                std::strcpy(local_buffer, "ACK:SOCKET DID NOT RESPOND IN TIME");
+                msgLength = std::strlen(local_buffer);
+                writeInteger(msgLengthPtr, msgLength);
+                res = write_to_fifo(&writePFD, msgLengthPtr, sizeof(msgLengthPtr), 4);
+                //TODO
+                //should we verify res?
+                
+                res = write_to_fifo(&writePFD, local_buffer, sizeof(local_buffer), msgLength);
+                //TODO 
+                //should we verify res?
+
+                continue;
+            }
+            
+            res = readFromSocket(local_buffer);
+            if(res == 0){
+                //How did we get here?
+            }
+
+            msgLength = std::strlen(local_buffer);
+            writeInteger(msgLengthPtr, msgLength);
+            res = write_to_fifo(&writePFD, msgLengthPtr, sizeof(msgLengthPtr), 4);
+            //TODO
+            //should we verify res?
+            
+            res = write_to_fifo(&writePFD, local_buffer, sizeof(local_buffer), msgLength);
+            //TODO should we verify res?
+
+            //This old version made the fifo thread handle
+            // different query scenarios
+            //This prevents the whole purpose of main loop
+            // which is to handle the communcation between the socket 
+            // and the FIFO
+            /*
             if((msgLength > 7 && strcomp(local_buffer, "search ", 7)) ||
                 (msgLength > 9 && strcomp(local_buffer, "analysis ", 9))){
                     sendToSocket(local_buffer);
@@ -323,6 +364,7 @@ void fifo_job(){
             }
 
             FIFO_status.store(FIFOSTATUS_BUSY);
+            */
         }
         else if(fifostatus == FIFOSTATUS_BUSY){
             sendToSocket("progress");
@@ -347,8 +389,8 @@ void fifo_job(){
                 gotResponse = 1;
             }
 
-            if(strcomp(local_buffer, "RESULT:", 7)){
-                FIFO_status.store(FIFOSTATUS_EMPTY);
+            if(strcomp(local_buffer, "RESULT", 6)){
+                FIFO_status.store(FIFOSTATUS_CONNECTED);
             }
         }
         else{
