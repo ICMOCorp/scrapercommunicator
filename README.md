@@ -16,4 +16,6 @@ Essentially the communicator is a pass through so that the Web app
 doesn't need to do any socket programming. Instead, the scraper and the
 communicator are solely responsible for connections.
 
+## [Source Code](docs/docs.md)
+
 # CHECKOUT

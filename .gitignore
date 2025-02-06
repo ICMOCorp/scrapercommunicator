@@ -8,6 +8,8 @@ service.cpp
 
 !*.hpp
 
-!README.md
+!*.md
 !*.png
 !*.jpg
+
+!docs/
